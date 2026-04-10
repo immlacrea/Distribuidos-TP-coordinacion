@@ -115,18 +115,13 @@ func (aggregation *Aggregation) handleDataMessage(fruitRecords []fruititem.Fruit
 }
 
 func (aggregation *Aggregation) buildFruitTop() []fruititem.FruitItem {
-	keys := make([]string, 0, len(aggregation.fruitItemMap))
-	for key := range aggregation.fruitItemMap {
-		keys = append(keys, key)
+	fruitItems := make([]fruititem.FruitItem, 0, len(aggregation.fruitItemMap))
+	for _, item := range aggregation.fruitItemMap {
+		fruitItems = append(fruitItems, item)
 	}
-	sort.SliceStable(keys, func(i, j int) bool {
-		return aggregation.fruitItemMap[keys[j]].Less(aggregation.fruitItemMap[keys[i]])
+	sort.SliceStable(fruitItems, func(i, j int) bool {
+		return fruitItems[j].Less(fruitItems[i])
 	})
-
-	finalTopSize := min(aggregation.topSize, len(keys))
-	fruitTopRecords := make([]fruititem.FruitItem, finalTopSize)
-	for i := range finalTopSize {
-		fruitTopRecords[i] = aggregation.fruitItemMap[keys[i]]
-	}
-	return fruitTopRecords
+	finalTopSize := min(aggregation.topSize, len(fruitItems))
+	return fruitItems[:finalTopSize]
 }

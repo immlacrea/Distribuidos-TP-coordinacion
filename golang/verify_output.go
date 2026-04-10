@@ -99,23 +99,14 @@ func buildInputFruitTop(inputFile string) ([]fruititem.FruitItem, error) {
 		}
 	}
 
-	fruitItemMapKeys := make([]string, 0)
-	for key := range amountByFruit {
-		fruitItemMapKeys = append(fruitItemMapKeys, key)
+	fruitItems := make([]fruititem.FruitItem, 0, len(amountByFruit))
+	for _, item := range amountByFruit {
+		fruitItems = append(fruitItems, item)
 	}
-
-	sort.SliceStable(fruitItemMapKeys, func(i, j int) bool {
-		fruitItemA := amountByFruit[fruitItemMapKeys[i]]
-		fruitItemB := amountByFruit[fruitItemMapKeys[j]]
-		return fruitItemB.Less(fruitItemA)
+	sort.SliceStable(fruitItems, func(i, j int) bool {
+		return fruitItems[j].Less(fruitItems[i])
 	})
-
-	fruitTopRecords := make([]fruititem.FruitItem, len(fruitItemMapKeys))
-	for i, key := range fruitItemMapKeys {
-		fruitTopRecords[i] = amountByFruit[key]
-	}
-
-	return fruitTopRecords, nil
+	return fruitItems, nil
 }
 
 func readOutputFruitTop(outputFile string) ([]fruititem.FruitItem, error) {
