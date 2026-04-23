@@ -32,7 +32,6 @@ class JoinFilter:
         payload = fields[1:]
 
         if len(payload) == 0:
-            # es un EOF
             count = self.eof_count_by_client.get(client_id, 0) + 1
             self.eof_count_by_client[client_id] = count
 
@@ -41,7 +40,6 @@ class JoinFilter:
                 ack()
                 return
 
-            # llegaron todos los EOFs, fusionar y enviar
             logging.info(f"All EOFs received for client {client_id}, flushing")
             self.eof_count_by_client.pop(client_id)
             combined = self.fruit_top_by_client.pop(client_id, [])
@@ -49,10 +47,8 @@ class JoinFilter:
             top = combined[:TOP_SIZE]
             self.output_queue.send(
                 message_protocol.internal.serialize([client_id] + top)
-                #message_protocol.internal.serialize([client_id] + [tuple(item) for item in top])
             )
         else:
-            # es un top parcial, acumular
             logging.info(f"Processing data message of client {client_id} data: {payload}")
             fruit_top = self.fruit_top_by_client.setdefault(client_id, [])
             fruit_top.extend(payload)

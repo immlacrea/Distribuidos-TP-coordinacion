@@ -2,7 +2,6 @@ import os
 import logging
 import threading
 import hashlib
-import time
 
 from common import middleware, message_protocol, fruit_item
 
@@ -15,6 +14,7 @@ SUM_CONTROL_EXCHANGE = "SUM_CONTROL_EXCHANGE"
 AGGREGATION_AMOUNT = int(os.environ["AGGREGATION_AMOUNT"])
 AGGREGATION_PREFIX = os.environ["AGGREGATION_PREFIX"]
 
+NEXT_ID = (ID + 1) % SUM_AMOUNT
 
 def _get_aggregator_index(fruit):
     return int(hashlib.md5(fruit.encode()).hexdigest(), 16) % AGGREGATION_AMOUNT
@@ -26,8 +26,12 @@ class SumFilter:
             MOM_HOST, INPUT_QUEUE
         )
 
-        self.eof_control_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
+        self.token_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
             MOM_HOST, SUM_PREFIX, [f"{SUM_PREFIX}_{ID}"]
+        )
+
+        self.next_token_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
+            MOM_HOST, SUM_PREFIX, [f"{SUM_PREFIX}_{NEXT_ID}"]
         )
 
         self.data_output_exchanges = []
@@ -37,18 +41,11 @@ class SumFilter:
             )
             self.data_output_exchanges.append(data_output_exchange)
 
-        self.eof_broadcast_exchanges = []
-        for i in range(SUM_AMOUNT):
-            eof_broadcast_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
-                    MOM_HOST, SUM_PREFIX, [f"{SUM_PREFIX}_{i}"]
-                )
-            self.eof_broadcast_exchanges.append(eof_broadcast_exchange)
-
         self.amount_by_client = {}
+        self.chunks_processed = {}
+        self.contributed = {}
 
-        self.processing_work_for_client = set()
         self.already_sent_for_client = set()
-        self.eof_received = set()
 
         self.lock = threading.Lock()
 
@@ -58,6 +55,9 @@ class SumFilter:
         fruits_of_client[fruit] = fruits_of_client.get(
             fruit, fruit_item.FruitItem(fruit, 0)
         ) + fruit_item.FruitItem(fruit, int(amount))
+
+        with self.lock:
+            self.chunks_processed[client_id] = self.chunks_processed.get(client_id, 0) + 1
 
     def _flush(self, client_id):
         logging.info(f"Flushing partial result for client {client_id}")
@@ -74,68 +74,71 @@ class SumFilter:
         for data_output_exchange in self.data_output_exchanges:
             data_output_exchange.send(message_protocol.internal.serialize([client_id]))
 
-        self.already_sent_for_client.add(client_id)
-
-    def _process_data_and_track(self, ack, client_id, fruit, amount):
         with self.lock:
-            self.processing_work_for_client.add(client_id)
-
-        self._process_data(client_id, fruit, amount)
-
-        with self.lock:
-            self.processing_work_for_client.discard(client_id)
-
-        ack()
-        self._try_flush(client_id)
+            self.already_sent_for_client.add(client_id)
 
     def process_data_messsage(self, message, ack, nack):
         fields = message_protocol.internal.deserialize(message)
         if len(fields) == 3:
-            self._process_data_and_track(ack, *fields)
+            self._process_data(*fields)
         else:
-            self._broadcast_eof(ack, *fields)
+            self._send_token(*fields)
+        ack()
 
-    def _broadcast_eof(self, ack, client_id):
-        logging.info(f"Broadcasting EOF for client {client_id}")
-        for exchange in self.eof_broadcast_exchanges:
-            exchange.send(
-                message_protocol.internal.serialize([client_id])
-            )
+    def _send_token(self, client_id, total_chunks):
+        with self.lock:
+            my_count = self.chunks_processed.get(client_id, 0)
+            self.contributed[client_id] = my_count
+
+        logging.info(f"Sending token for client {client_id}, my_count={my_count}, total_chunks={total_chunks}")
+        self.next_token_exchange.send(
+            message_protocol.internal.serialize([client_id, my_count, total_chunks])
+        )
+
+    def _process_token(self, message, ack, nack):
+        fields = message_protocol.internal.deserialize(message)
+        client_id, accumulated_count, total_chunks = fields
+        logging.info(f"Received token for client {client_id}, accumulated={accumulated_count}, total={total_chunks}")
+
+        with self.lock:
+            already_sent = client_id in self.already_sent_for_client
+
+        if already_sent:
+            logging.info(f"Token for client {client_id} completed full ring, discarding")
+            ack()
+            return
+
+        if accumulated_count == total_chunks:
+            logging.info(f"Token match for client {client_id}, flushing")
+            self._flush(client_id)
+        else:
+            with self.lock:
+                my_count = self.chunks_processed.get(client_id, 0)
+                prev_contributed = self.contributed.get(client_id, 0)
+                self.contributed[client_id] = my_count
+
+            accumulated_count = accumulated_count - prev_contributed + my_count
+
+            logging.info(f"Token for client {client_id}: accumulated={accumulated_count}, total={total_chunks}")
+
+        self.next_token_exchange.send(
+            message_protocol.internal.serialize([client_id, accumulated_count, total_chunks])
+        )
         ack()
 
     def start(self):
-        eof_thread = self._start_listening_eof_broadcast()
+        token_thread = self._start_token_ring_thread()
         self.input_queue.start_consuming(self.process_data_messsage)
-        eof_thread.join()
+        token_thread.join()
 
-    def _start_listening_eof_broadcast(self):
-        eof_thread = threading.Thread(
-            target=self.eof_control_exchange.start_consuming,
-            args=(self._process_eof,),
+    def _start_token_ring_thread(self):
+        token_thread = threading.Thread(
+            target=self.token_exchange.start_consuming,
+            args=(self._process_token,),
             daemon=True
         )
-        eof_thread.start()
-        return eof_thread
-
-    def _process_eof(self, message, ack, nack):
-        fields = message_protocol.internal.deserialize(message)
-        client_id = fields[0]
-        logging.info(f"Received EOF broadcast for client {client_id}")
-        with self.lock:
-            self.eof_received.add(client_id)
-
-        ack()
-        self._try_flush(client_id)
-
-    def _try_flush(self, client_id):
-        with self.lock:
-            if client_id not in self.eof_received:
-                return
-            if client_id in self.processing_work_for_client:
-                return
-            if client_id in self.already_sent_for_client:
-                return
-            self._flush(client_id)
+        token_thread.start()
+        return token_thread
 
 
 def main():

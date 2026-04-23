@@ -29,7 +29,7 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
                 raise MessageMiddlewareMessageError(str(e))
 
         try:
-            self._channel.basic_qos(prefetch_count=1)
+            self._channel.basic_qos(prefetch_count=50)
             self._channel.basic_consume(
                 queue=self._queue,
                 on_message_callback=callback)
@@ -102,7 +102,7 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
                     exchange=self._exchange_name,
                     queue=queue_name,
                     routing_key=routing_key)
-            self._channel.basic_qos(prefetch_count=1)
+            self._channel.basic_qos(prefetch_count=50)
             self._channel.basic_consume(queue=queue_name, on_message_callback=callback)
             self._channel.start_consuming()
 
