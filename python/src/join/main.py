@@ -23,10 +23,40 @@ class JoinFilter:
             MOM_HOST, OUTPUT_QUEUE
         )
 
+        self.eof_count_by_client = {}
+        self.fruit_top_by_client = {}
+
     def process_messsage(self, message, ack, nack):
-        logging.info("Received top")
-        fruit_top = message_protocol.internal.deserialize(message)
-        self.output_queue.send(message_protocol.internal.serialize(fruit_top))
+        fields = message_protocol.internal.deserialize(message)
+        client_id = fields[0]
+        payload = fields[1:]
+
+        if len(payload) == 0:
+            # es un EOF
+            count = self.eof_count_by_client.get(client_id, 0) + 1
+            self.eof_count_by_client[client_id] = count
+
+            if count < AGGREGATION_AMOUNT:
+                logging.info(f"EOF {count}/{AGGREGATION_AMOUNT} for client {client_id}, waiting")
+                ack()
+                return
+
+            # llegaron todos los EOFs, fusionar y enviar
+            logging.info(f"All EOFs received for client {client_id}, flushing")
+            self.eof_count_by_client.pop(client_id)
+            combined = self.fruit_top_by_client.pop(client_id, [])
+            combined.sort(key=lambda x: x[1], reverse=True)
+            top = combined[:TOP_SIZE]
+            self.output_queue.send(
+                message_protocol.internal.serialize([client_id] + top)
+                #message_protocol.internal.serialize([client_id] + [tuple(item) for item in top])
+            )
+        else:
+            # es un top parcial, acumular
+            logging.info(f"Processing data message of client {client_id} data: {payload}")
+            fruit_top = self.fruit_top_by_client.setdefault(client_id, [])
+            fruit_top.extend(payload)
+
         ack()
 
     def start(self):
@@ -35,6 +65,7 @@ class JoinFilter:
 
 def main():
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("pika").setLevel(logging.WARNING)
     join_filter = JoinFilter()
     join_filter.start()
 

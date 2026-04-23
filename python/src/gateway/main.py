@@ -22,6 +22,7 @@ def handle_client_request(client_socket, message_handler):
             message = message_protocol.external.recv_msg(client_socket)
 
             if message[0] == message_protocol.external.MsgType.FRUIT_RECORD:
+                logging.info(f"Send Client {client_socket} message: {message[1]}")
                 serialized_message = message_handler.serialize_data_message(message[1])
                 output_queue.send(serialized_message)
                 message_protocol.external.send_msg(
@@ -29,6 +30,7 @@ def handle_client_request(client_socket, message_handler):
                 )
 
             if message[0] == message_protocol.external.MsgType.END_OF_RECODS:
+                logging.info(f"Send Client {client_socket} eof: {message[1]}")
                 serialized_message = message_handler.serialize_eof_message(message[1])
                 output_queue.send(serialized_message)
                 message_protocol.external.send_msg(
