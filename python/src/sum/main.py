@@ -1,5 +1,6 @@
 import os
 import logging
+import signal
 import threading
 import hashlib
 
@@ -48,6 +49,13 @@ class SumFilter:
         self.already_sent_for_client = set()
 
         self.lock = threading.Lock()
+
+        signal.signal(signal.SIGTERM, self._handle_sigterm)
+
+    def _handle_sigterm(self, signum, frame):
+        logging.info("SIGTERM received, stopping consumers")
+        self.input_queue.stop_consuming()
+        self.token_exchange.stop_consuming()
 
     def _process_data(self, client_id, fruit, amount):
         logging.info(f"Process data from client {client_id}, fruit {fruit}, amount {amount}")
@@ -130,6 +138,10 @@ class SumFilter:
         token_thread = self._start_token_ring_thread()
         self.input_queue.start_consuming(self.process_data_messsage)
         token_thread.join()
+        self.input_queue.close()
+        self.token_exchange.close()
+        for exchange in self.data_output_exchanges:
+            exchange.close()
 
     def _start_token_ring_thread(self):
         token_thread = threading.Thread(
