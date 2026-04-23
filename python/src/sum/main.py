@@ -53,7 +53,6 @@ class SumFilter:
         self.lock = threading.Lock()
 
     def _process_data(self, client_id, fruit, amount):
-        time.sleep(0.5)
         logging.info(f"Process data from client {client_id}, fruit {fruit}, amount {amount}")
         fruits_of_client = self.amount_by_client.setdefault(client_id, {})
         fruits_of_client[fruit] = fruits_of_client.get(
